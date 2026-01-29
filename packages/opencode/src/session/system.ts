@@ -107,6 +107,41 @@ export namespace SystemPrompt {
       }
     }
 
+    // Scan .claude/rules/ directories for Claude Code compatibility
+    if (!Flag.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT) {
+      const claudeDirs: string[] = []
+
+      // Project-level .claude/rules/
+      if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+        const projectClaudeDirs = await Array.fromAsync(
+          Filesystem.up({
+            targets: [".claude"],
+            start: Instance.directory,
+            stop: Instance.worktree,
+          }),
+        )
+        claudeDirs.push(...projectClaudeDirs)
+      }
+
+      // Global ~/.claude/rules/
+      const globalClaudeDir = path.join(Global.Path.home, ".claude")
+      if (await Filesystem.isDir(globalClaudeDir)) {
+        claudeDirs.push(globalClaudeDir)
+      }
+
+      for (const dir of claudeDirs) {
+        const rulesDir = path.join(dir, "rules")
+        const matches = await Array.fromAsync(
+          new Bun.Glob("*.md").scan({
+            cwd: rulesDir,
+            absolute: true,
+            onlyFiles: true,
+          }),
+        ).catch(() => [])
+        matches.forEach((p) => paths.add(p))
+      }
+    }
+
     for (const globalRuleFile of GLOBAL_RULE_FILES) {
       if (await Bun.file(globalRuleFile).exists()) {
         paths.add(globalRuleFile)
