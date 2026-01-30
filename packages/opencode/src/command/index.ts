@@ -1,13 +1,19 @@
 import { BusEvent } from "@/bus/bus-event"
 import z from "zod"
 import { Config } from "../config/config"
+import { ConfigMarkdown } from "../config/markdown"
 import { Instance } from "../project/instance"
 import { Identifier } from "../id/id"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 import { MCP } from "../mcp"
+import { Plugin } from "../plugin"
+import { Skill } from "../skill"
+import { Log } from "../util/log"
 
 export namespace Command {
+  const log = Log.create({ service: "command" })
+
   export const Event = {
     Executed: BusEvent.define(
       "command.executed",
@@ -115,6 +121,62 @@ export namespace Command {
           })
         },
         hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
+      }
+    }
+
+    // Load commands from plugins via hook
+    const pluginCommands = await Plugin.trigger(
+      "command.register",
+      {},
+      {
+        commands: [] as Array<{
+          name: string
+          description?: string
+          template: string
+          agent?: string
+          model?: string
+        }>,
+      },
+    )
+    for (const cmd of pluginCommands.commands) {
+      result[cmd.name] = {
+        name: cmd.name,
+        description: cmd.description,
+        agent: cmd.agent,
+        model: cmd.model,
+        get template() {
+          return cmd.template
+        },
+        hints: hints(cmd.template),
+      }
+    }
+
+    // Load user-invocable skills as slash commands (Claude Code compatibility)
+    // Skills with user-invocable: true (default) become /skill-name commands
+    const skills = await Skill.all()
+    for (const skill of skills) {
+      // Skip if not user-invocable (user-invocable defaults to true)
+      if (skill.userInvocable === false) continue
+
+      // Skip if command already exists (config/MCP/plugin commands have priority)
+      if (result[skill.name]) {
+        log.debug("skill shadowed by existing command", { name: skill.name })
+        continue
+      }
+
+      result[skill.name] = {
+        name: skill.name,
+        description: skill.description,
+        model: skill.model,
+        agent: skill.agent,
+        // context: fork means run in subagent (subtask)
+        subtask: skill.context === "fork",
+        get template() {
+          // Return promise that reads and returns skill content
+          return ConfigMarkdown.parse(skill.location).then((md) => md.content)
+        },
+        // Generate hints from argumentHint or arguments array
+        hints: skill.argumentHint ? [skill.argumentHint] : (skill.arguments?.map((_, i) => `$${i + 1}`) ?? []),
       }
     }
 

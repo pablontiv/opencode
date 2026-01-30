@@ -2,20 +2,26 @@ import path from "path"
 import z from "zod"
 import { Tool } from "./tool"
 import { Skill } from "../skill"
+import { SkillSubstitution } from "../skill/substitution"
 import { ConfigMarkdown } from "../config/markdown"
 import { PermissionNext } from "../permission/next"
 
 export const SkillTool = Tool.define("skill", async (ctx) => {
   const skills = await Skill.all()
 
-  // Filter skills by agent permissions if agent provided
+  // Filter skills by agent permissions and disableModelInvocation
   const agent = ctx?.agent
-  const accessibleSkills = agent
-    ? skills.filter((skill) => {
-        const rule = PermissionNext.evaluate("skill", skill.name, agent.permission)
-        return rule.action !== "deny"
-      })
-    : skills
+  const accessibleSkills = skills.filter((skill) => {
+    // Respect disable-model-invocation (Claude Code compatibility)
+    if (skill.disableModelInvocation) return false
+
+    // Check agent permissions
+    if (agent) {
+      const rule = PermissionNext.evaluate("skill", skill.name, agent.permission)
+      return rule.action !== "deny"
+    }
+    return true
+  })
 
   const description =
     accessibleSkills.length === 0
@@ -26,12 +32,15 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
           "Use this when a task matches an available skill's description.",
           "Only the skills listed here are available:",
           "<available_skills>",
-          ...accessibleSkills.flatMap((skill) => [
-            `  <skill>`,
-            `    <name>${skill.name}</name>`,
-            `    <description>${skill.description}</description>`,
-            `  </skill>`,
-          ]),
+          ...accessibleSkills.flatMap((skill) =>
+            [
+              `  <skill>`,
+              `    <name>${skill.name}</name>`,
+              `    <description>${skill.description}</description>`,
+              skill.argumentHint ? `    <arguments>${skill.argumentHint}</arguments>` : "",
+              `  </skill>`,
+            ].filter(Boolean),
+          ),
           "</available_skills>",
         ].join(" ")
 
@@ -43,6 +52,7 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
 
   const parameters = z.object({
     name: z.string().describe(`The skill identifier from available_skills${hint}`),
+    arguments: z.string().optional().describe("Arguments to pass to the skill"),
   })
 
   return {
@@ -62,12 +72,15 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
         always: [params.name],
         metadata: {},
       })
-      // Load and parse skill content
-      const parsed = await ConfigMarkdown.parse(skill.location)
+
+      const rawContent = (await ConfigMarkdown.parse(skill.location)).content
       const dir = path.dirname(skill.location)
 
+      // Process Claude Code style substitutions ($ARGUMENTS, $0, ${CLAUDE_SESSION_ID}, !`cmd`)
+      const content = await SkillSubstitution.process(rawContent, params.arguments ?? "", ctx.sessionID)
+
       // Format output similar to plugin pattern
-      const output = [`## Skill: ${skill.name}`, "", `**Base directory**: ${dir}`, "", parsed.content.trim()].join("\n")
+      const output = [`## Skill: ${skill.name}`, "", `**Base directory**: ${dir}`, "", content.trim()].join("\n")
 
       return {
         title: `Loaded skill: ${skill.name}`,
@@ -75,6 +88,7 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
         metadata: {
           name: skill.name,
           dir,
+          arguments: params.arguments,
         },
       }
     },

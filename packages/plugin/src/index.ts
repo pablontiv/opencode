@@ -223,4 +223,20 @@ export interface Hooks {
     input: { sessionID: string; messageID: string; partID: string },
     output: { text: string },
   ) => Promise<void>
+  /**
+   * Register dynamic commands from plugins.
+   * Called when commands are being loaded.
+   */
+  "command.register"?: (
+    input: {},
+    output: {
+      commands: Array<{
+        name: string
+        description?: string
+        template: string
+        agent?: string
+        model?: string
+      }>
+    },
+  ) => Promise<void>
 }

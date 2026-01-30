@@ -148,6 +148,9 @@ export namespace Config {
       result.plugin.push(...(await loadPlugin(dir)))
     }
 
+    // Load commands from .claude/commands/ directories (Claude Code compatibility)
+    result.command = mergeDeep(result.command ?? {}, await loadClaudeCommands())
+
     // Migrate deprecated mode field to agent field
     for (const [name, mode] of Object.entries(result.mode)) {
       result.agent = mergeDeep(result.agent ?? {}, {
@@ -238,6 +241,68 @@ export namespace Config {
   }
 
   const COMMAND_GLOB = new Bun.Glob("{command,commands}/**/*.md")
+  const CLAUDE_COMMAND_GLOB = new Bun.Glob("commands/**/*.md")
+
+  async function loadClaudeCommands(): Promise<Record<string, Command>> {
+    if (Flag.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT) return {}
+
+    const result: Record<string, Command> = {}
+    const claudeDirs = Flag.OPENCODE_DISABLE_PROJECT_CONFIG
+      ? []
+      : await Array.fromAsync(
+          Filesystem.up({
+            targets: [".claude"],
+            start: Instance.directory,
+            stop: Instance.worktree,
+          }),
+        )
+    // Include global ~/.claude/commands/
+    const globalClaude = path.join(os.homedir(), ".claude")
+    if (await Filesystem.isDir(globalClaude)) {
+      claudeDirs.push(globalClaude)
+    }
+
+    for (const dir of claudeDirs) {
+      const matches = await Array.fromAsync(
+        CLAUDE_COMMAND_GLOB.scan({
+          cwd: dir,
+          absolute: true,
+          onlyFiles: true,
+          followSymlinks: true,
+          dot: true,
+        }),
+      ).catch((err) => {
+        log.debug("failed .claude/commands scan", { dir, err })
+        return []
+      })
+
+      for (const item of matches) {
+        const md = await ConfigMarkdown.parse(item).catch((err) => {
+          log.debug("failed to parse .claude command", { command: item, err })
+          return undefined
+        })
+        if (!md) continue
+
+        const patterns = ["/.claude/commands/", "/commands/"]
+        const file = rel(item, patterns) ?? path.basename(item)
+        const name = trim(file)
+
+        const config = {
+          name,
+          ...md.data,
+          template: md.content.trim(),
+        }
+        const parsed = Command.safeParse(config)
+        if (parsed.success) {
+          result[config.name] = parsed.data
+        } else {
+          log.debug("invalid .claude command", { path: item, issues: parsed.error.issues })
+        }
+      }
+    }
+    return result
+  }
+
   async function loadCommand(dir: string) {
     const result: Record<string, Command> = {}
     for await (const item of COMMAND_GLOB.scan({

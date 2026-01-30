@@ -13,10 +13,32 @@ import { Session } from "@/session"
 
 export namespace Skill {
   const log = Log.create({ service: "skill" })
+
+  // Schema for skill arguments (Claude Code compatibility)
+  export const Argument = z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    required: z.boolean().optional().default(false),
+  })
+  export type Argument = z.infer<typeof Argument>
+
+  // Full skill info schema with Claude Code frontmatter fields
   export const Info = z.object({
+    // Core fields
     name: z.string(),
     description: z.string(),
     location: z.string(),
+
+    // Claude Code frontmatter fields
+    argumentHint: z.string().optional(), // argument-hint
+    disableModelInvocation: z.boolean().optional(), // disable-model-invocation
+    userInvocable: z.boolean().optional().default(true), // user-invocable
+    allowedTools: z.array(z.string()).optional(), // allowed-tools
+    model: z.string().optional(), // model
+    context: z.enum(["fork"]).optional(), // context
+    agent: z.string().optional(), // agent
+    hooks: z.record(z.string(), z.unknown()).optional(), // hooks (pass-through)
+    arguments: z.array(Argument).optional(), // arguments array
   })
   export type Info = z.infer<typeof Info>
 
@@ -56,8 +78,34 @@ export namespace Skill {
 
       if (!md) return
 
-      const parsed = Info.pick({ name: true, description: true }).safeParse(md.data)
-      if (!parsed.success) return
+      // Map Claude Code kebab-case frontmatter to camelCase
+      // Parse allowed-tools from comma-separated string if needed
+      const allowedToolsRaw = md.data["allowed-tools"]
+      const allowedTools =
+        typeof allowedToolsRaw === "string"
+          ? allowedToolsRaw.split(",").map((s: string) => s.trim())
+          : Array.isArray(allowedToolsRaw)
+            ? allowedToolsRaw
+            : undefined
+
+      const parsed = Info.omit({ location: true }).safeParse({
+        name: md.data.name,
+        description: md.data.description,
+        argumentHint: md.data["argument-hint"],
+        disableModelInvocation: md.data["disable-model-invocation"],
+        userInvocable: md.data["user-invocable"] ?? true,
+        allowedTools,
+        model: md.data.model,
+        context: md.data.context,
+        agent: md.data.agent,
+        hooks: md.data.hooks,
+        arguments: md.data.arguments,
+      })
+
+      if (!parsed.success) {
+        log.warn("failed to parse skill frontmatter", { skill: match, issues: parsed.error.issues })
+        return
+      }
 
       // Warn on duplicate skill names
       if (skills[parsed.data.name]) {
@@ -69,8 +117,7 @@ export namespace Skill {
       }
 
       skills[parsed.data.name] = {
-        name: parsed.data.name,
-        description: parsed.data.description,
+        ...parsed.data,
         location: match,
       }
     }
