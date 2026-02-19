@@ -29,14 +29,13 @@ export namespace ConfigMarkdown {
         continue
       }
 
-      // skip lines that are continuations (indented)
-      if (line.match(/^\s+/)) {
-        result.push(line)
-        continue
-      }
+      // Get indentation level
+      const indentMatch = line.match(/^(\s*)/)
+      const indent = indentMatch ? indentMatch[1] : ""
+      const trimmedLine = line.trim()
 
-      // match key: value pattern
-      const kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$/)
+      // match key: value pattern (works for both root and indented lines)
+      const kvMatch = trimmedLine.match(/^([a-zA-Z_-][a-zA-Z0-9_-]*)\s*:\s*(.*)$/)
       if (!kvMatch) {
         result.push(line)
         continue
@@ -51,10 +50,11 @@ export namespace ConfigMarkdown {
         continue
       }
 
-      // if value contains a colon, convert to block scalar
-      if (value.includes(":")) {
-        result.push(`${key}: |`)
-        result.push(`  ${value}`)
+      // if value contains a colon (but not in URL), quote it
+      if (value.includes(":") && !value.match(/^https?:\/\//)) {
+        // Use double quotes and escape any existing double quotes
+        const escaped = value.replace(/"/g, '\\"')
+        result.push(`${indent}${key}: "${escaped}"`)
         continue
       }
 
